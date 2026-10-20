@@ -1,0 +1,23 @@
+{
+  "name": "mcplytics",
+  "version": "0.1.0",
+  "description": "Usage and health for a remote MCP server: which tools, which apps, how calls ended, how long they took. One wrapper, no SDK, no backend, never stores arguments.",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./src/index.js" },
+    "./node": { "types": "./index.d.ts", "default": "./src/node.js" }
+  },
+  "types": "./index.d.ts",
+  "bin": { "mcplytics": "./bin/mcplytics.js" },
+  "files": ["src", "bin", "index.d.ts", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": { "node": ">=20" },
+  "keywords": ["mcp", "model-context-protocol", "analytics", "observability", "cloudflare-workers", "ai-agents", "telemetry"],
+  "author": "dave8172",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/dave8172/mcplytics.git" },
+  "homepage": "https://github.com/dave8172/mcplytics#readme",
+  "bugs": { "url": "https://github.com/dave8172/mcplytics/issues" }
+}
