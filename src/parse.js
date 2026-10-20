@@ -125,8 +125,9 @@ export const key = id => (typeof id === 'string' ? 's:' : 'n:') + String(id);
  *   protocol_error  a JSON-RPC error: unknown tool, bad arguments, header mismatch
  *   http_error      refused before any JSON-RPC answer (status >= 400, no message)
  *   no_response     a 2xx with no answer for this id: the stream closed first
+ *   unread          a stream past MAX_STREAM: reading stopped before the answer, so how it ended is unknown
  */
-export function outcome(reply, status) {
+export function outcome(reply, status, cut = false) {
   if (reply && reply.error) return { outcome: 'protocol_error', code: Number(reply.error.code) || 0 };
   if (reply && reply.result) {
     if (reply.result.resultType === 'input_required') return { outcome: 'input_required', code: 0 };
@@ -134,6 +135,7 @@ export function outcome(reply, status) {
     return { outcome: 'ok', code: 0 };
   }
   if (status >= 400) return { outcome: 'http_error', code: status };
+  if (cut) return { outcome: 'unread', code: 0 };
   return { outcome: 'no_response', code: 0 };
 }
 
@@ -145,7 +147,8 @@ export function outcome(reply, status) {
 export async function readStream(body, waiting, now = Date.now) {
   const found = new Map();
   let doneAt = null;
-  if (!body) return { found, doneAt };
+  let cut = false;
+  if (!body) return { found, doneAt, cut };
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -164,7 +167,10 @@ export async function readStream(body, waiting, now = Date.now) {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_STREAM) break;
+      if (size > MAX_STREAM) {
+        cut = true;
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop();
@@ -178,5 +184,5 @@ export async function readStream(body, waiting, now = Date.now) {
   } finally {
     reader.cancel().catch(() => {});
   }
-  return { found, doneAt: doneAt ?? now() };
+  return { found, doneAt: doneAt ?? now(), cut };
 }

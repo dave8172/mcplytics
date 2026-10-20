@@ -13,7 +13,7 @@ export interface McpEvent {
   clientSource: 'meta' | 'initialize' | 'session' | 'user-agent' | '';
   /** MCP protocol version, e.g. "2026-07-28". */
   protocol: string;
-  outcome: 'ok' | 'tool_error' | 'input_required' | 'protocol_error' | 'http_error' | 'no_response' | 'crash';
+  outcome: 'ok' | 'tool_error' | 'input_required' | 'protocol_error' | 'http_error' | 'no_response' | 'unread' | 'crash';
   /** JSON-RPC error code for protocol_error, HTTP status for http_error, else 0. */
   code: number;
   /** HTTP status of the answer. */

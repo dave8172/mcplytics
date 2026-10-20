@@ -118,6 +118,26 @@ test('stream closed before the answer: no_response', async () => {
   assert.equal(events[0].outcome, 'no_response');
 });
 
+test('stream past 8 MB before the answer: unread, not no_response; client still gets the answer', async () => {
+  const filler = `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"note":"${'x'.repeat(64 * 1024)}"}}\n\n`;
+  const answer = 'data: {"jsonrpc":"2.0","id":10,"result":{"content":[]}}\n\n';
+  const handler = async () => {
+    const enc = new TextEncoder();
+    let sent = 0;
+    const body = new ReadableStream({
+      pull(c) {
+        if (sent++ < 130) return c.enqueue(enc.encode(filler));
+        c.enqueue(enc.encode(answer));
+        c.close();
+      },
+    });
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const { events, text } = await run(handler, call(toolCall(10, 'chatty_tool')));
+  assert.ok(text.length > 8 * 1024 * 1024 && text.endsWith(answer));
+  assert.equal(events[0].outcome, 'unread');
+});
+
 test('older spec: initialize names the client, the session ID carries it to later calls', async () => {
   const handler = async req => {
     const m = await req.json();

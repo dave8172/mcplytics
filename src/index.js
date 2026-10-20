@@ -97,9 +97,10 @@ export function mcplytics(handler, options = {}) {
     let found = new Map();
     let doneAt = Date.now();
     let fallback = null;
+    let cut = false;
     if (reply && reply.stream) {
       const waiting = new Set(asked.filter(a => a.id !== undefined).map(a => key(a.id)));
-      ({ found, doneAt } = await readStream(reply.stream, waiting));
+      ({ found, doneAt, cut } = await readStream(reply.stream, waiting));
     } else if (reply && reply.answer) {
       const body = await readCapped(reply.answer.body);
       const msgs = body === null ? [] : messages(body) || [];
@@ -119,7 +120,7 @@ export function mcplytics(handler, options = {}) {
       const client = a.client
         || (session && SESSIONS.has(session) ? { ...SESSIONS.get(session), source: 'session' } : null)
         || (fromAgent ? { ...fromAgent, source: 'user-agent' } : { name: '', version: '', source: '' });
-      const end = reply ? outcome(found.get(key(a.id)) || (asked.length === 1 ? fallback : null), status)
+      const end = reply ? outcome(found.get(key(a.id)) || (asked.length === 1 ? fallback : null), status, cut)
         : { outcome: 'crash', code: 0 };
       events.push({
         time: new Date(start).toISOString(),

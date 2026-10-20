@@ -111,9 +111,10 @@ One event per call, with these fields and no others:
 | `protocol_error` | a JSON-RPC error: unknown tool, bad arguments, header mismatch |
 | `http_error` | refused before any JSON-RPC answer, e.g. 401 sign-in required |
 | `no_response` | a 2xx stream that closed before answering |
+| `unread` | a stream longer than 8 MB: mcplytics stopped reading before the answer, so it doesn't know how the call ended. Your client still gets every byte |
 | `crash` | your handler threw |
 
-The report counts every outcome except `ok` and `input_required` as failed.
+The report counts every outcome except `ok`, `input_required` and `unread` as failed.
 
 ## Options
 

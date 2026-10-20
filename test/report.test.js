@@ -36,6 +36,13 @@ test('summary: tools ranked, failures counted, input_required kept apart', () =>
   assert.match(format(s), /search\s+3\s+33%/);
 });
 
+test('unread is not counted as failed', () => {
+  const s = summarize([ev('chatty', 'unread', 4000), ev('chatty', 'no_response', 100)]);
+  assert.equal(s.tools[0].calls, 2);
+  assert.equal(s.tools[0].failed, 1);
+  assert.equal(s.outcomes.unread, 1);
+});
+
 test('sampled Analytics Engine rows count by weight', () => {
   const s = summarize([ev('search', 'ok', 10, { weight: 100 }), ev('get', 'ok', 10, { weight: 1 })]);
   assert.equal(s.total.calls, 101);
