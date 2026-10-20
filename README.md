@@ -1,6 +1,6 @@
 # mcplytics
 
-**Usage and health for a remote MCP server: which tools get called, by which apps, how each call ended and how long it took. One wrapper, no SDK, no backend, and it never stores what people asked.**
+**Usage and health for a remote MCP server: which tools get called, by which apps (as each app names itself), how each call ended and how long it took. One wrapper, no SDK, no backend, and it never stores what people asked.**
 
 You built an MCP server and put it online. AI apps now call it: Claude, Cursor, ChatGPT, scripts. mcplytics answers the plain questions about that traffic:
 
