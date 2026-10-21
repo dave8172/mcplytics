@@ -43,6 +43,22 @@ test('unread is not counted as failed', () => {
   assert.equal(s.outcomes.unread, 1);
 });
 
+test('method not found is counted apart, not as a failed call', () => {
+  const s = summarize([
+    ev('search', 'ok', 10),
+    ev('', 'protocol_error', 50, { method: 'server/discover', code: -32601, client: 'some-probe' }),
+    ev('', 'protocol_error', 50, { method: 'server/discover', code: '-32601', client: 'other-probe' }),
+    ev('nope', 'protocol_error', 3, { code: -32602 }),
+  ]);
+  assert.equal(s.total.calls, 2);
+  assert.equal(s.total.failed, 1);
+  assert.deepEqual(s.notOffered, [{ method: 'server/discover', calls: 2 }]);
+  assert.equal(s.outcomes.not_offered, 2);
+  assert.equal(s.outcomes.protocol_error, 1);
+  assert.ok(!s.methods.some(m => m.label === 'server/discover'));
+  assert.match(format(s), /doesn't have[^\n]*\nserver\/discover\s+2/);
+});
+
 test('sampled Analytics Engine rows count by weight', () => {
   const s = summarize([ev('search', 'ok', 10, { weight: 100 }), ev('get', 'ok', 10, { weight: 1 })]);
   assert.equal(s.total.calls, 101);

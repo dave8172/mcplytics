@@ -8,6 +8,11 @@ const w = r => (Number(r.weight) > 0 ? Number(r.weight) : 1);
 
 const FAILED = new Set(['tool_error', 'protocol_error', 'http_error', 'no_response', 'crash']);
 
+// -32601: the caller asked for a method this server doesn't have. Scanners do
+// it to learn what a server speaks (server/discover on an older server, other
+// protocols' methods). It says nothing about the server's health.
+const notOffered = r => r.outcome === 'protocol_error' && Number(r.code) === -32601;
+
 /** Weighted percentile of `ms`; q in 0..1. */
 export function percentile(rows, q) {
   if (!rows.length) return null;
@@ -42,20 +47,26 @@ const byCalls = (a, b) => b.calls - a.calls || String(a.label).localeCompare(Str
 /**
  * rows: events (FIELDS in index.js), optionally with `weight`.
  * A call that asked the client for more input (input_required) is retried as
- * a new call, so it is counted on its own line, not as a call.
+ * a new call, so it is counted on its own line, not as a call. A call for a
+ * method the server doesn't have is counted apart too, by method.
  */
 export function summarize(rows, { top = 10 } = {}) {
   const asked = rows.filter(r => r.outcome === 'input_required');
-  const calls = rows.filter(r => r.outcome !== 'input_required');
+  const missing = rows.filter(notOffered);
+  const calls = rows.filter(r => r.outcome !== 'input_required' && !notOffered(r));
   const times = calls.map(r => r.time).filter(Boolean).sort();
   const tools = calls.filter(r => r.method === 'tools/call');
   const outcomes = {};
-  for (const r of rows) outcomes[r.outcome] = (outcomes[r.outcome] || 0) + w(r);
+  for (const r of rows) {
+    const k = notOffered(r) ? 'not_offered' : r.outcome;
+    outcomes[k] = (outcomes[k] || 0) + w(r);
+  }
   return {
     from: times[0] || null,
     to: times[times.length - 1] || null,
     total: line('all calls', calls),
     inputRequired: asked.reduce((s, r) => s + w(r), 0),
+    notOffered: [...group(missing, r => r.method || '(none)')].map(([method, rs]) => ({ method, calls: rs.reduce((s, r) => s + w(r), 0) })).sort((a, b) => b.calls - a.calls || a.method.localeCompare(b.method)).slice(0, top),
     days: [...group(calls, r => (r.time || '').slice(0, 10))].map(([day, rs]) => ({ day, calls: rs.reduce((s, r) => s + w(r), 0) })).sort((a, b) => a.day.localeCompare(b.day)),
     tools: [...group(tools, r => r.name || '(no name)')].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
     methods: [...group(calls, r => r.method || '(none)')].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
@@ -80,7 +91,7 @@ function table(title, lines) {
 
 /** The report as plain text for a terminal. */
 export function format(s) {
-  if (!s.total.calls && !s.inputRequired) return 'No MCP calls recorded yet.';
+  if (!s.total.calls && !s.inputRequired && !s.notOffered.length) return 'No MCP calls recorded yet.';
   const out = [
     `mcplytics: ${num(s.total.calls)} calls, ${s.from?.slice(0, 16).replace('T', ' ')} to ${s.to?.slice(0, 16).replace('T', ' ')} UTC`,
     `failed ${pct(s.total.failRate)} · p50 ${ms(s.total.p50)} · p95 ${ms(s.total.p95)}` + (s.inputRequired ? ` · ${num(s.inputRequired)} asked the client for more input` : ''),
@@ -88,6 +99,8 @@ export function format(s) {
     table('Apps calling (client name)', s.clients),
     s.callers.length ? table('Your labels (caller)', s.callers) : '',
     table('Methods', s.methods),
+    s.notOffered.length ? '\nAsked for methods this server doesn\'t have (not counted as calls)' : '',
+    ...s.notOffered.map(m => `${m.method.padEnd(24)} ${num(m.calls)}`),
     '\nHow calls ended',
     ...Object.entries(s.outcomes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.padEnd(16)} ${num(v)}`),
     '\nCalls per day',

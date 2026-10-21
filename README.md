@@ -114,7 +114,7 @@ One event per call, with these fields and no others:
 | `unread` | a stream longer than 8 MB: mcplytics stopped reading before the answer, so it doesn't know how the call ended. Your client still gets every byte |
 | `crash` | your handler threw |
 
-The report counts every outcome except `ok`, `input_required` and `unread` as failed.
+The report counts every outcome except `ok`, `input_required` and `unread` as failed. A `protocol_error` with code `-32601` (method not found) is counted apart, by method: the caller asked for something your server doesn't have, often a scanner checking which protocol version it speaks. It says nothing about your server's health.
 
 ## Options
 
