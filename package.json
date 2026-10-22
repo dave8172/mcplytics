@@ -19,7 +19,7 @@
   },
   "types": "./index.d.ts",
   "bin": {
-    "mcplytics": "./bin/mcplytics.js"
+    "mcplytics": "bin/mcplytics.js"
   },
   "files": [
     "src",
