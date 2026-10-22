@@ -181,29 +181,29 @@ test('Base64 Mcp-Name is decoded', async () => {
 });
 
 test('never keeps arguments, results, or Mcp-Param headers', async () => {
-  const secret = 'card-4242-secret';
+  const planted = 'planted-4242-value';
   const handler = async req => {
     const m = await req.json();
     return json({ jsonrpc: '2.0', id: m.id, result: { content: [{ type: 'text', text: `echo ${m.params.arguments.q}` }] } });
   };
-  const { events } = await run(handler, call(toolCall(11, 'search', { q: secret }), { 'mcp-param-q': secret, authorization: `Bearer ${secret}` }));
-  assert.ok(!JSON.stringify(events).includes(secret));
+  const { events } = await run(handler, call(toolCall(11, 'search', { q: planted }), { 'mcp-param-q': planted, authorization: `Bearer ${planted}` }));
+  assert.ok(!JSON.stringify(events).includes(planted));
   assert.ok(!JSON.stringify(events).includes('echo'));
 });
 
 test('never keeps error text: a protocol error message, error.data, or a failed tool\'s result', async () => {
-  const secret = 'patient-7731-record';
-  const asProtocol = async req => { const m = await req.json(); return json({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: `bad q: ${secret}`, data: { excerpt: secret } } }); };
-  const asTool = async req => { const m = await req.json(); return json({ jsonrpc: '2.0', id: m.id, result: { isError: true, content: [{ type: 'text', text: `no match in "${secret}"` }] } }); };
+  const planted = 'planted-7731-record';
+  const asProtocol = async req => { const m = await req.json(); return json({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: `bad q: ${planted}`, data: { excerpt: planted } } }); };
+  const asTool = async req => { const m = await req.json(); return json({ jsonrpc: '2.0', id: m.id, result: { isError: true, content: [{ type: 'text', text: `no match in "${planted}"` }] } }); };
   const asStream = async req => {
     const m = await req.json();
-    return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { isError: true, content: [{ type: 'text', text: secret }] } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+    return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { isError: true, content: [{ type: 'text', text: planted }] } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
   };
-  const asAnonymous = async () => json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: `cannot parse ${secret}` } }, 400);
+  const asAnonymous = async () => json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: `cannot parse ${planted}` } }, 400);
   for (const [handler, outcome] of [[asProtocol, 'protocol_error'], [asTool, 'tool_error'], [asStream, 'tool_error'], [asAnonymous, 'protocol_error']]) {
     const { events } = await run(handler, call(toolCall(30, 'search', { q: 'x' })));
     assert.equal(events[0].outcome, outcome);
-    assert.ok(!JSON.stringify(events).includes(secret));
+    assert.ok(!JSON.stringify(events).includes(planted));
   }
 });
 
