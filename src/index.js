@@ -1,16 +1,15 @@
-// mcplytics: usage and health for a remote MCP server, from its own front door.
+// mcplytics: usage, health and security signals for a remote MCP server,
+// from its own front door.
 //
 // Wrap the function that answers HTTP requests. Each MCP call that passes
 // through is written down as one small event: which method and tool, which
-// app called, how it ended and how long it took. The wrapper reads copies of
-// the request and the answer and hands the server's own answer back
-// unchanged. It needs no SDK and no backend, and nothing it does can break
-// the server: every step is guarded, and writing happens after the answer has
-// left.
-import {
-  MAX_BODY, clean, userAgentClient, readCapped, messages, describeRequest,
-  responsesById, anonymousError, key, outcome, readStream, oauthApp,
-} from './parse.js';
+// app called, how it ended, how long it took, and any security signal it
+// raised. The wrapper reads copies of the request and the answer and hands
+// the server's own answer back unchanged. It needs no SDK and no backend, and
+// nothing it does can break the server: every step is guarded, and writing
+// happens after the answer has left.
+import { clean, oauthApp } from './parse.js';
+import { recorder, guarded, appOf } from './core.js';
 
 export { oauthApp };
 
@@ -18,37 +17,42 @@ export { oauthApp };
 export const FIELDS = [
   'time', 'method', 'name', 'client', 'clientVersion', 'clientSource',
   'protocol', 'outcome', 'code', 'status', 'ms', 'stream', 'caller', 'app',
+  'flags', 'toolsHash',
+];
+
+/**
+ * The security signals an event can carry, comma-separated in `flags`:
+ *   oversize            the request body was over 256 KB, so it wasn't read
+ *   unparseable         the request body wasn't JSON
+ *   foreign_origin      a browser on another site sent it (Origin header)
+ *   unknown_tool        a tools/call for a name this server hasn't listed
+ *   insufficient_scope  refused: the token lacks a permission the call needs
+ *   token_in_url        a credential was sent in the URL's query string
+ *   hidden_text         a tools/list answer hides invisible characters
+ *   tools_changed       a tools/list answer differs from the last one seen
+ */
+export const FLAGS = [
+  'oversize', 'unparseable', 'foreign_origin', 'unknown_tool',
+  'insufficient_scope', 'token_in_url', 'hidden_text', 'tools_changed',
 ];
 
 const isRequest = r => !!r && typeof r.url === 'string' && typeof r.method === 'string' && !!r.headers && typeof r.headers.get === 'function';
 
-// Spec versions before 2026-07-28 send the client's name once, in
-// `initialize`, and a session ID after. Remember a few so later calls in the
-// same session can be named. Per isolate or process, best effort.
-const SESSIONS = new Map();
-const SESSION_LIMIT = 1000;
-function rememberSession(id, client) {
-  if (!id || !client) return;
-  SESSIONS.delete(id);
-  SESSIONS.set(id, client);
-  if (SESSIONS.size > SESSION_LIMIT) SESSIONS.delete(SESSIONS.keys().next().value);
-}
-
 /**
  * handler: (request, env?, ctx?) => Response       Workers, Deno, Bun, Node
  *       or (context) => Response                    Cloudflare Pages Functions
- * options.sink:   { write(events, env) } or (env) => that
- * options.caller: (request, env) => string          your own label, e.g. a plan tier
- * options.oauth:  { clientId(request, env, ctx), registered }
+ * options.sink:    { write(events, env) } or (env) => that
+ * options.caller:  (request, env) => string         your own label, e.g. a plan tier
+ * options.oauth:   { clientId(request, env, ctx), registered }
  *                                                   the OAuth client your auth step verified
+ * options.origins: [string]                         browser origins you expect, e.g. your own web app
  * options.onError: (error) => void                  mcplytics' own failures; default silent
  */
 export function mcplytics(handler, options = {}) {
   if (typeof handler !== 'function') throw new TypeError('mcplytics: handler must be a function');
   const onError = typeof options.onError === 'function' ? options.onError : () => {};
-  const guard = fn => {
-    try { return fn(); } catch (e) { try { onError(e); } catch {} return undefined; }
-  };
+  const guard = guarded(onError);
+  const record = recorder(options);
 
   return async function wrapped(...args) {
     const first = args[0];
@@ -64,13 +68,9 @@ export function mcplytics(handler, options = {}) {
     const start = Date.now();
     const copy = guard(() => request.clone());
     const caller = guard(() => clean(options.caller ? options.caller(request, env) : '')) || '';
-
     // Asked after the handler, which is where the server's own auth step
     // has checked the token and knows its client ID.
-    const app = () => guard(() => {
-      const o = options.oauth;
-      return o && typeof o.clientId === 'function' ? oauthApp(o.clientId(request, env, ctx), o.registered) : '';
-    }) || '';
+    const app = () => guard(() => appOf(options, request, env, ctx)) || '';
 
     let response;
     try {
@@ -97,65 +97,29 @@ export function mcplytics(handler, options = {}) {
     guard(() => waitUntil(record(copy, request, { response, answer, stream }, start, label, env).catch(onError)));
     return passed;
   };
+}
 
-  async function record(copy, request, reply, start, { caller, app }, env) {
-    const length = Number(request.headers.get('content-length') || 0);
-    const readable = copy && length <= MAX_BODY;
-    // An unread copy holds the whole body in memory; let it go.
-    if (copy && !readable && copy.body) copy.body.cancel().catch(() => {});
-    const text = readable ? await readCapped(copy.body) : null;
-    const asked = describeRequest(text === null ? null : messages(text), request.headers);
-    const status = reply ? reply.response.status : 500;
-
-    let found = new Map();
-    let doneAt = Date.now();
-    let fallback = null;
-    let cut = false;
-    if (reply && reply.stream) {
-      const waiting = new Set(asked.filter(a => a.id !== undefined).map(a => key(a.id)));
-      ({ found, doneAt, cut } = await readStream(reply.stream, waiting));
-    } else if (reply && reply.answer) {
-      const body = await readCapped(reply.answer.body);
-      const msgs = body === null ? [] : messages(body) || [];
-      found = responsesById(msgs);
-      fallback = anonymousError(msgs);
-      doneAt = Date.now();
+/**
+ * A handler that forwards every request to another MCP server, unchanged,
+ * and returns its answer. Wrap it to watch a server written in any language:
+ * `mcplytics(proxy('http://127.0.0.1:8000/mcp'), options)`.
+ */
+export function proxy(target) {
+  const to = new URL(target);
+  return (request) => {
+    const url = new URL(to);
+    url.search = new URL(request.url).search;
+    const headers = new Headers(request.headers);
+    headers.delete('host');
+    // Ask for plain bytes, so the answer passes on exactly as it came.
+    headers.set('accept-encoding', 'identity');
+    const init = { method: request.method, headers, redirect: 'manual' };
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      init.body = request.body;
+      init.duplex = 'half';
     }
-
-    const session = request.headers.get('mcp-session-id');
-    const newSession = reply ? reply.response.headers.get('mcp-session-id') : null;
-    const fromAgent = userAgentClient(request.headers.get('user-agent'));
-    const events = [];
-    for (const a of asked) {
-      // A notification gets no answer and says nothing about health.
-      if (a.id === undefined && a.method.startsWith('notifications/')) continue;
-      if (a.method === 'initialize' && a.client) rememberSession(newSession, a.client);
-      const client = a.client
-        || (session && SESSIONS.has(session) ? { ...SESSIONS.get(session), source: 'session' } : null)
-        || (fromAgent ? { ...fromAgent, source: 'user-agent' } : { name: '', version: '', source: '' });
-      const end = reply ? outcome(found.get(key(a.id)) || (asked.length === 1 ? fallback : null), status, cut)
-        : { outcome: 'crash', code: 0 };
-      events.push({
-        time: new Date(start).toISOString(),
-        method: a.method,
-        name: a.name,
-        client: client.name,
-        clientVersion: client.version,
-        clientSource: client.source,
-        protocol: a.protocol,
-        outcome: end.outcome,
-        code: end.code,
-        status,
-        ms: Math.max(0, doneAt - start),
-        stream: !!(reply && reply.stream),
-        caller,
-        app,
-      });
-    }
-    if (!events.length) return;
-    const sink = typeof options.sink === 'function' ? options.sink(env) : options.sink;
-    if (sink && typeof sink.write === 'function') await sink.write(events, env);
-  }
+    return fetch(url, init);
+  };
 }
 
 /**
@@ -165,7 +129,7 @@ export function mcplytics(handler, options = {}) {
  *
  * Layout, which `mcplytics report --cloudflare` reads back:
  *   index1  tool name, or the method when there is none
- *   blob1-10 method, name, client, clientVersion, clientSource, protocol, outcome, caller, stream ("sse"|"json"), app
+ *   blob1-12 method, name, client, clientVersion, clientSource, protocol, outcome, caller, stream ("sse"|"json"), app, flags, toolsHash
  *   double1-3 ms, status, code
  */
 export function analyticsEngine(binding = 'MCPLYTICS') {
@@ -176,7 +140,7 @@ export function analyticsEngine(binding = 'MCPLYTICS') {
       for (const e of events) {
         dataset.writeDataPoint({
           indexes: [(e.name || e.method).slice(0, 96)],
-          blobs: [e.method, e.name, e.client, e.clientVersion, e.clientSource, e.protocol, e.outcome, e.caller, e.stream ? 'sse' : 'json', e.app || ''],
+          blobs: [e.method, e.name, e.client, e.clientVersion, e.clientSource, e.protocol, e.outcome, e.caller, e.stream ? 'sse' : 'json', e.app || '', e.flags || '', e.toolsHash || ''],
           doubles: [e.ms, e.status, e.code],
         });
       }

@@ -19,7 +19,7 @@ export async function fromCloudflare({ account, dataset = 'mcplytics' }, days) {
   if (!/^[A-Za-z0-9_]+$/.test(dataset)) throw new Error('--dataset: letters, digits and _ only');
   if (!/^[0-9a-f]{32}$/i.test(account)) throw new Error('--account: a 32-character account ID');
   const sql = `SELECT timestamp, blob1 AS method, blob2 AS name, blob3 AS client, blob4 AS clientVersion,
-    blob5 AS clientSource, blob6 AS protocol, blob7 AS outcome, blob8 AS caller, blob9 AS stream, blob10 AS app,
+    blob5 AS clientSource, blob6 AS protocol, blob7 AS outcome, blob8 AS caller, blob9 AS stream, blob10 AS app, blob11 AS flags, blob12 AS toolsHash,
     double1 AS ms, double2 AS status, double3 AS code, _sample_interval AS weight
     FROM ${dataset} WHERE timestamp > NOW() - INTERVAL '${days}' DAY
     ORDER BY timestamp DESC LIMIT ${LIMIT} FORMAT JSON`;

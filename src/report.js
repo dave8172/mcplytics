@@ -74,7 +74,28 @@ export function summarize(rows, { top = 10 } = {}) {
     callers: [...group(calls.filter(r => r.caller), r => r.caller)].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
     apps: [...group(calls.filter(r => r.app), r => r.app)].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
     outcomes,
+    security: security(rows, top),
   };
+}
+
+/**
+ * What the security signals say: each flag and the apps that raised it,
+ * sign-ins refused by app, and every version of the tool list seen.
+ */
+function security(rows, top) {
+  const sum = rs => rs.reduce((s, r) => s + w(r), 0);
+  const flagged = rows.flatMap(r => String(r.flags || '').split(',').filter(Boolean).map(flag => ({ ...r, flag })));
+  const flags = [...group(flagged, r => r.flag)].map(([flag, rs]) => ({
+    flag, calls: sum(rs),
+    apps: [...group(rs, r => r.app || r.client || '(unnamed)')].map(([k, g]) => [k, sum(g)]).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k),
+  })).sort((a, b) => b.calls - a.calls || a.flag.localeCompare(b.flag));
+  const refused = [...group(rows.filter(r => Number(r.status) === 401 || Number(r.status) === 403), r => r.app || r.client || '(unnamed)')]
+    .map(([label, rs]) => ({ label, calls: sum(rs) })).sort((a, b) => b.calls - a.calls).slice(0, top);
+  const toolLists = [...group(rows.filter(r => r.toolsHash), r => r.toolsHash)].map(([hash, rs]) => {
+    const times = rs.map(r => r.time).filter(Boolean).sort();
+    return { hash, calls: sum(rs), first: times[0] || null, last: times[times.length - 1] || null };
+  }).sort((a, b) => String(a.first).localeCompare(String(b.first)));
+  return { flags, refused, toolLists };
 }
 
 const pct = x => (x * 100).toFixed(x && x < 0.1 ? 1 : 0) + '%';
@@ -90,6 +111,29 @@ function table(title, lines) {
   return [`\n${title}`, head, ...body].join('\n');
 }
 
+const WHAT = {
+  oversize: 'body over 256 KB, not read',
+  unparseable: 'body was not JSON',
+  foreign_origin: 'sent by a browser on another site',
+  unknown_tool: 'called a tool your server never listed',
+  insufficient_scope: 'refused: token lacked a permission',
+  token_in_url: 'credential in the URL',
+  hidden_text: 'tool list hides invisible characters',
+  tools_changed: 'tool list changed',
+};
+
+function securityLines(sec) {
+  if (!sec || (!sec.flags.length && !sec.refused.length && sec.toolLists.length < 2)) return [];
+  const out = ['\nSecurity signals'];
+  for (const f of sec.flags) out.push(`${f.flag.padEnd(19)} ${num(f.calls).padStart(6)}  ${WHAT[f.flag] || ''}${f.apps.length ? ` (from ${f.apps.join(', ')})` : ''}`);
+  if (sec.refused.length) out.push(`sign-in refused     ${num(sec.refused.reduce((s, r) => s + r.calls, 0)).padStart(6)}  401/403, most from ${sec.refused.slice(0, 3).map(r => r.label).join(', ')}`);
+  if (sec.toolLists.length > 1) {
+    out.push(`\nTool list versions (${sec.toolLists.length}; a change you didn't deploy is worth a look)`);
+    for (const t of sec.toolLists) out.push(`${t.hash}  ${String(t.first).slice(0, 16).replace('T', ' ')} to ${String(t.last).slice(0, 16).replace('T', ' ')}  ${num(t.calls)} lists`);
+  }
+  return out;
+}
+
 /** The report as plain text for a terminal. */
 export function format(s) {
   if (!s.total.calls && !s.inputRequired && !s.notOffered.length) return 'No MCP calls recorded yet.';
@@ -103,6 +147,7 @@ export function format(s) {
     table('Methods', s.methods),
     s.notOffered.length ? '\nAsked for methods this server doesn\'t have (not counted as calls)' : '',
     ...s.notOffered.map(m => `${m.method.padEnd(24)} ${num(m.calls)}`),
+    ...securityLines(s.security),
     '\nHow calls ended',
     ...Object.entries(s.outcomes).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.padEnd(16)} ${num(v)}`),
     '\nCalls per day',

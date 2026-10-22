@@ -30,7 +30,17 @@ export interface McpEvent {
    * "(unlisted)" for any other ID, "" with no OAuth client.
    */
   app: string;
+  /** Security signals this call raised, comma-separated (see FLAGS); "" if none. */
+  flags: string;
+  /** For tools/list: a 16-hex-digit fingerprint of the tool definitions shown; else "". */
+  toolsHash: string;
 }
+
+export type Flag = 'oversize' | 'unparseable' | 'foreign_origin' | 'unknown_tool'
+  | 'insufficient_scope' | 'token_in_url' | 'hidden_text' | 'tools_changed';
+
+/** Every security signal an event can carry in `flags`. */
+export const FLAGS: Flag[];
 
 export interface Sink {
   write(events: McpEvent[], env?: unknown): void | Promise<void>;
@@ -48,6 +58,8 @@ export interface Options<Env = any> {
     /** IDs you issued yourself, mapped to the name to record. */
     registered?: Record<string, string>;
   };
+  /** Browser origins you expect (e.g. your own web app); any other Origin is flagged foreign_origin. */
+  origins?: string[];
   /** mcplytics' own failures. The server's answer is never affected. Default: ignored. */
   onError?: (error: unknown) => void;
 }
@@ -71,7 +83,43 @@ export function memory(): Sink & { events: McpEvent[] };
 /** Calls `fn` once per event. */
 export function callback(fn: (event: McpEvent) => void): Sink;
 
+/** A handler that forwards every request to another MCP server, e.g. one written in Python. */
+export function proxy(target: string | URL): (request: Request) => Promise<Response>;
+
 /** Appends JSON lines to a file (from "mcplytics/node"; Node, Bun, Deno). */
 export function jsonl(path?: string): Sink;
+
+/**
+ * Express/Connect middleware for handlers that take Node's (req, res), such as the
+ * SDK's StreamableHTTPServerTransport (from "mcplytics/node"). Put it after express.json().
+ * Hooks receive (request, undefined, req): Node's req is the third argument.
+ */
+export function mcplyticsNode(options?: Options): (req: any, res: any, next: () => void) => void;
+
+/** A node:http request listener that runs a web-standard (Request → Response) handler (from "mcplytics/node"). */
+export function serve(handler: (request: Request) => Response | Promise<Response>): (req: any, res: any) => Promise<void>;
+
+export interface Finding {
+  level: 'fail' | 'warn' | 'pass' | 'info';
+  id: string;
+  title: string;
+  detail: string;
+  fix: string;
+}
+
+export interface CheckResult {
+  url: string;
+  protocol: string;
+  tools: number | null;
+  toolsHash: string;
+  requests: number;
+  findings: Finding[];
+}
+
+/** Checks your own remote MCP server from outside (from "mcplytics/check"). Never calls one of your tools. */
+export function check(url: string, options?: { headers?: Record<string, string> }): Promise<CheckResult>;
+
+/** A CheckResult as plain text (from "mcplytics/check"). */
+export function formatCheck(result: CheckResult): string;
 
 export const FIELDS: (keyof McpEvent)[];

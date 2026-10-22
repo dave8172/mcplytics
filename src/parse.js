@@ -96,7 +96,7 @@ export function describeRequest(msgs, headers) {
   const hName = headerName(headers.get('mcp-name'));
   const hProtocol = clean(headers.get('mcp-protocol-version') || '', 32);
   if (msgs === null || msgs.length === 0) {
-    return [{ id: undefined, method: hMethod || '(unreadable)', name: hName, protocol: hProtocol, client: null }];
+    return [{ id: undefined, method: hMethod || '(unreadable)', name: hName, protocol: hProtocol, client: null, paged: false }];
   }
   return msgs.map(msg => {
     const params = msg.params && typeof msg.params === 'object' ? msg.params : {};
@@ -114,7 +114,9 @@ export function describeRequest(msgs, headers) {
       client = { name: clean(params.clientInfo.name), version: clean(params.clientInfo.version, 32), source: 'initialize' };
     }
     const protocol = hProtocol || clean(meta[PROTOCOL], 32) || (method === 'initialize' ? clean(params.protocolVersion, 32) : '');
-    return { id: msg.id, method, name, protocol, client };
+    // A request for a later page of a list.
+    const paged = typeof params.cursor === 'string' && params.cursor !== '';
+    return { id: msg.id, method, name, protocol, client, paged };
   });
 }
 
@@ -201,4 +203,77 @@ export async function readStream(body, waiting, now = Date.now) {
     reader.cancel().catch(() => {});
   }
   return { found, doneAt: doneAt ?? now(), cut };
+}
+
+// Security signals. Each is a short code, never content: what was seen, not
+// what it said.
+
+/**
+ * Characters a person can't see but a model reads: zero-width and joiner
+ * characters, bidirectional controls, the byte-order mark, the terminal
+ * escape that can redraw what a reviewer sees, and the Unicode tag block,
+ * which can spell out a whole hidden instruction.
+ */
+export const INVISIBLE = /[\x1b\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]|\udb40[\udc00-\udc7f]/;
+
+/** Every string inside a value, however deeply nested. */
+export function strings(value, out = [], depth = 0) {
+  if (depth > 20 || out.length > 5000) return out;
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) value.forEach(v => strings(v, out, depth + 1));
+  else if (value && typeof value === 'object') Object.values(value).forEach(v => strings(v, out, depth + 1));
+  return out;
+}
+
+/** The tools in a tools/list answer, or null if it isn't one. */
+export function listedTools(reply) {
+  const tools = reply && reply.result && reply.result.tools;
+  return Array.isArray(tools) ? tools.filter(t => t && typeof t === 'object') : null;
+}
+
+/** True if any text a model reads about these tools hides characters. */
+export function hidesText(tools) {
+  return strings(tools).some(s => INVISIBLE.test(s));
+}
+
+const canonical = v => Array.isArray(v) ? v.map(canonical)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])])) : v;
+
+/**
+ * A short fingerprint of the tool definitions a model is shown: names,
+ * descriptions, schemas and annotations, in a fixed order. The same tools
+ * always give the same value; any edit gives a new one.
+ */
+export async function fingerprint(tools) {
+  const shown = tools.map(t => ({
+    name: t.name, title: t.title, description: t.description,
+    inputSchema: t.inputSchema, outputSchema: t.outputSchema, annotations: t.annotations,
+  })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const bytes = new TextEncoder().encode(JSON.stringify(canonical(shown)));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * An Origin header from somewhere other than this server. Browsers send
+ * Origin; a page on another site calling your server is how DNS rebinding
+ * and cross-site calls look. `allowed` lists origins you expect.
+ */
+export function foreignOrigin(origin, url, allowed = []) {
+  if (!origin) return false;
+  if (allowed.includes(origin)) return false;
+  try {
+    return new URL(origin).host !== new URL(url).host;
+  } catch {
+    return true;
+  }
+}
+
+/** A credential in the URL's query string, which the spec forbids: URLs end up in logs. */
+export function tokenInUrl(url) {
+  try {
+    return [...new URL(url).searchParams.keys()].some(k => /^(access_token|token|api[_-]?key|auth|authorization|bearer)$/i.test(k));
+  } catch {
+    return false;
+  }
 }

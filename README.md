@@ -1,15 +1,18 @@
 # mcplytics
 
-**Usage and health for a remote MCP server: which tools get called, by which apps (as each app names itself, or as its verified OAuth client), how each call ended and how long it took. One wrapper, no SDK, no backend, and it never stores what people asked.**
+**Usage, health and security for a remote MCP server: which tools get called, by which apps (as each app names itself, or as its verified OAuth client), how each call ended, how long it took, and the signs of an attack. One wrapper, no SDK, no backend, and it never stores what people asked. Plus a check that tells you what to fix.**
 
-You built an MCP server and put it online. AI apps now call it: Claude, Cursor, ChatGPT, scripts. mcplytics answers the plain questions about that traffic:
+You built an MCP server and put it online. AI apps now call it: Claude, Cursor, ChatGPT, scripts. So do scanners, and sometimes people looking for a way in. mcplytics answers the plain questions about that traffic:
 
 - Which tools are used, and which never are?
 - Which apps call, and how often?
 - How many calls fail, and do they fail because a tool broke or because the request was wrong?
 - How fast is it? Median and slowest 5%.
+- Is anyone probing it? Calls to tools you never listed, requests from other websites, credentials in URLs, and tool definitions that changed when you didn't deploy.
 
-It wraps the one function that answers your server's HTTP requests, so it works on any Streamable HTTP server written in JavaScript: built with the official MCP SDK, with another framework, or by hand. It runs on Cloudflare Workers and Pages, Deno, Bun and Node, and has zero dependencies.
+And `npx mcplytics check <url>` looks at your server from outside, the way a stranger would, and says what to fix ([below](#check-your-server)).
+
+It wraps the one function that answers your server's HTTP requests, so it works on any Streamable HTTP server written in JavaScript: built with the official MCP SDK (web-standard or Express transport), with another framework, or by hand. It runs on Cloudflare Workers and Pages, Deno, Bun and Node, and has zero dependencies. A server in Python, Go or any other language can be watched through a [small proxy](#a-server-in-another-language).
 
 ```
 mcplytics: 21 calls, 2026-10-20 19:05 to 2026-10-20 19:05 UTC
@@ -61,7 +64,7 @@ export const onRequestPost = mcplytics(yourPostHandler, { sink: analyticsEngine(
 
 Add the binding under **Settings → Bindings → Analytics engine** (variable `MCPLYTICS`, dataset `mcplytics`), then redeploy. Pages can't use the binding in local dev; there the wrapper writes nothing and your server works as before.
 
-### Deno, Bun, Node
+### Deno, Bun
 
 ```js
 import { mcplytics } from 'mcplytics';
@@ -71,7 +74,45 @@ Bun.serve({ fetch: mcplytics(handler, { sink: jsonl('mcplytics.jsonl') }) });
 // Deno.serve(mcplytics(handler, { sink: jsonl('mcplytics.jsonl') }));
 ```
 
-On Node, wrap whatever turns a web `Request` into a `Response` (Hono, the SDK's web-standard handler, your own).
+### Node with Express (the official SDK's `StreamableHTTPServerTransport`)
+
+That transport takes Node's `(req, res)`, so mcplytics comes in as middleware. Put it after `express.json()`:
+
+```js
+import express from 'express';
+import { mcplyticsNode, jsonl } from 'mcplytics/node';
+
+const app = express();
+app.use(express.json());
+app.use('/mcp', mcplyticsNode({ sink: jsonl('mcplytics.jsonl') }));
+app.post('/mcp', (req, res) => transport.handleRequest(req, res, req.body));   // as before
+```
+
+It copies what your answer writes as it goes out, and records the call once the answer has finished. Tested with SDK 1.32.1, JSON and event-stream answers. Hooks get Node's `req` as their third argument, so with the SDK's `requireBearerAuth` the verified client is `oauth: { clientId: (_, __, req) => req.auth?.clientId }`.
+
+### Node with a web-standard handler
+
+For Hono, the SDK's `WebStandardStreamableHTTPServerTransport` (tested with 1.32.1), or your own `Request → Response` function, `serve()` runs it on plain `node:http`:
+
+```js
+import http from 'node:http';
+import { mcplytics } from 'mcplytics';
+import { serve, jsonl } from 'mcplytics/node';
+
+http.createServer(serve(mcplytics(handler, { sink: jsonl('mcplytics.jsonl') }))).listen(3000);
+```
+
+### A server in another language
+
+Run a small front door that forwards every request to your server unchanged, and wrap that:
+
+```js
+import { mcplytics, proxy, analyticsEngine } from 'mcplytics';
+
+export default { fetch: mcplytics(proxy('https://python-backend.example.com/mcp'), { sink: analyticsEngine() }) };
+```
+
+On Node, `http.createServer(serve(mcplytics(proxy('http://127.0.0.1:8000/mcp'), { sink: jsonl() })))`. Requests and answers pass through unchanged, except that `Host` is set for the backend and compression is turned off between the two, so the answer can be read and passed on as it came.
 
 ### Read the report
 
@@ -81,6 +122,34 @@ npx mcplytics report --cloudflare --account <account id> --days 7
 ```
 
 `--cloudflare` reads Analytics Engine through Cloudflare's SQL API. Set `CLOUDFLARE_API_TOKEN` to a token with **Account Analytics: Read**. `--json` prints the numbers instead of tables.
+
+## Check your server
+
+```
+npx mcplytics check https://your.server/mcp
+npx mcplytics check https://your.server/mcp --header "Authorization: Bearer <token>"
+```
+
+It sends about a dozen small requests, the kind a stranger or a scanner would send, and prints what to fix. It never calls one of your tools: the only `tools/call` it sends names a tool that doesn't exist. Headers you pass go to that server only and are never printed. It exits 1 when something needs fixing, so it can run in CI.
+
+What it looks at:
+
+| Check | Passes when |
+|---|---|
+| HTTPS | the address is `https://` (plain HTTP is fine on your own machine) |
+| Sign-in | without a token: 401 with `WWW-Authenticate: Bearer resource_metadata=…`, protected-resource metadata at `/.well-known/oauth-protected-resource`, and a made-up token refused with 401 |
+| Origin | a request with another website's `Origin` gets 403, as the spec requires. This is what stops DNS rebinding |
+| Protocol version | an unknown `MCP-Protocol-Version` gets 400 |
+| Errors | malformed JSON, an unknown method and an unknown tool get answers without stack traces or file paths |
+| Sessions (before 2026-07-28) | session IDs look random, and a made-up one gets 404 |
+| Old transport | the 2024-11-05 HTTP+SSE endpoint no longer answers |
+| CORS | another website can't call it with the visitor's cookies |
+| Tool definitions | no invisible characters (zero-width, bidirectional, Unicode tags, terminal escapes), no text that reads like orders to the model, unique names, annotations present and not claiming "read-only" on a tool named `delete_…` or `submit_…` |
+| Open servers | tools an anonymous caller can reach are marked read-only, or need sign-in |
+
+It also prints the fingerprint of your tool list, the same value mcplytics records on every `tools/list`, so you can tell which version of your tools is live.
+
+A server built with the official SDK on Express (1.32.1) with no extra settings got two findings: it answers requests from any website (no Origin check), and Express shows stack traces in error answers unless `NODE_ENV=production`.
 
 ## What it records
 
@@ -97,8 +166,10 @@ One event per call, with these fields and no others:
 | `status`, `ms`, `stream` | `200`, `41`, `false` | the answer |
 | `caller` | `free` | your own label, if you set `options.caller` |
 | `app` | `app.example.com` | the OAuth client your server verified, if you set `options.oauth` ([below](#oauth-clients)) |
+| `flags` | `unknown_tool` | security signals the call raised ([below](#security-signals)) |
+| `toolsHash` | `9c650467604dfdbf` | on `tools/list`: a fingerprint of the tool definitions shown |
 
-**Never recorded:** tool arguments, tool results, resource URIs, error messages and `error.data`, the text of a failed tool's result, `Mcp-Param-*` headers, `Authorization`, raw OAuth client IDs, cookies, IP addresses. A failed call keeps only its outcome and numeric code, because error text can quote an argument or part of a document. Names that come from callers are cut to a fixed length and stripped to printable ASCII.
+**Never recorded:** tool arguments, tool results, resource URIs, error messages and `error.data`, the text of a failed tool's result, tool descriptions, `Mcp-Param-*` headers, `Authorization`, the URL's query string, the `Origin` value, raw OAuth client IDs, cookies, IP addresses. A failed call keeps only its outcome and numeric code, because error text can quote an argument or part of a document. Names that come from callers are cut to a fixed length and stripped to printable ASCII.
 
 **Your tools are never changed.** mcplytics adds no fields to tool schemas and no text to results. It reads copies of the request and the answer and hands your server's own answer back.
 
@@ -117,12 +188,32 @@ One event per call, with these fields and no others:
 
 The report counts every outcome except `ok`, `input_required` and `unread` as failed. A `protocol_error` with code `-32601` (method not found) is counted apart, by method: the caller asked for something your server doesn't have, often a scanner checking which protocol version it speaks. It says nothing about your server's health.
 
+## Security signals
+
+Each event carries the signals it raised, as short codes. Never what was in the request: what kind of thing happened.
+
+| Flag | Raised when | Why it matters |
+|---|---|---|
+| `unknown_tool` | a `tools/call` names a tool your server has never listed | scanners and people guessing at tools you might have (`delete_everything`, `exec`) |
+| `foreign_origin` | a browser on another website sent the request | DNS rebinding and cross-site calls look like this. List your own web apps in `options.origins` |
+| `token_in_url` | a credential sits in the query string (`?access_token=…`) | the spec forbids it: URLs end up in logs, history and analytics |
+| `insufficient_scope` | a 403 says the token lacks a permission | a client reaching for more than it was granted |
+| `oversize` | the request body is over 256 KB | a cheap way to tie up a server |
+| `unparseable` | the request body isn't JSON | probing, or a broken client |
+| `hidden_text` | your `tools/list` answer contains invisible characters | how tool poisoning hides instructions a person reviewing the tool can't see |
+| `tools_changed` | a whole `tools/list` answer differs from the last one seen | a deploy you know about, or tool definitions changed by someone else (a "rug pull") |
+
+`mcplytics report` adds a **Security signals** section with each flag, the apps that raised it, sign-ins refused (401/403) by app, and every version of your tool list with when it was first and last seen. Sign-in refusals come from `status`, so they need no flag.
+
+`unknown_tool` and `tools_changed` compare against the tools this process or isolate has seen listed, so they start working after the first `tools/list` and are best effort across many isolates.
+
 ## Options
 
 ```js
 mcplytics(handler, {
   sink,                       // analyticsEngine(), jsonl(path), memory(), callback(fn), or (env) => sink
   caller: (request, env) => request.headers.get('authorization') ? 'paid' : 'free',
+  origins: ['https://app.example.com'],   // browser origins you expect; others are flagged foreign_origin
   onError: e => console.warn('mcplytics', e),   // its own failures; ignored by default
 });
 ```
@@ -175,6 +266,8 @@ The ID itself is never stored. Only what it is checked against is.
 ## Limits
 
 - **Remote servers only.** A local server talks to its app over stdio, with no HTTP request to wrap.
+- **It watches; it doesn't block.** mcplytics never changes or delays an answer, so a signal tells you something happened, not that it was stopped. Blocking belongs in your server or a gateway. `check` tells you which of those protections are missing.
+- **`check` sees what a stranger sees.** It can't read your code, so it can't tell whether a tool validates its inputs or whether a token's audience is checked inside your auth library. Passing it is a baseline, not a guarantee.
 - **No intent.** It doesn't ask the model why it called a tool. Doing that means adding a field to every tool, and that's the line this tool doesn't cross.
 - **Client names are what clients send.** `clientInfo` is a SHOULD in the spec, not a MUST, and any name can be claimed. The User-Agent fallback names the HTTP library more often than the app. With OAuth, [`options.oauth`](#oauth-clients) gives a name the authorization server has checked.
 - **Cloudflare's clock.** In Workers, `Date.now()` moves only when your code waits on I/O, so `ms` counts time spent waiting (storage, fetches, the stream) and not pure computation.

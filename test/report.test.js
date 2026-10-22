@@ -95,3 +95,22 @@ test('apps by verified OAuth client: shown only when some call has one', () => {
   assert.deepEqual(s.apps.map(a => [a.label, a.calls]), [['app.example.com', 2]]);
   assert.ok(format(s).includes('Apps by verified OAuth client'));
 });
+
+test('security: flags with the apps that raised them, sign-ins refused, tool list versions', () => {
+  const rows = [
+    ev('delete_everything', 'tool_error', 3, { flags: 'unknown_tool', client: 'probe' }),
+    ev('search', 'ok', 3, { flags: 'foreign_origin,token_in_url' }),
+    ev('', 'ok', 2, { method: 'tools/list', toolsHash: 'aaaa000000000000', time: '2026-10-20T09:00:00.000Z' }),
+    ev('', 'ok', 2, { method: 'tools/list', toolsHash: 'bbbb000000000000', flags: 'tools_changed', time: '2026-10-21T09:00:00.000Z' }),
+    ev('search', 'http_error', 1, { status: 401, code: 401, client: 'curl' }),
+  ];
+  const s = summarize(rows);
+  assert.deepEqual(s.security.flags.map(f => [f.flag, f.calls]), [['foreign_origin', 1], ['token_in_url', 1], ['tools_changed', 1], ['unknown_tool', 1]]);
+  assert.deepEqual(s.security.flags.find(f => f.flag === 'unknown_tool').apps, ['probe']);
+  assert.deepEqual(s.security.refused, [{ label: 'curl', calls: 1 }]);
+  assert.deepEqual(s.security.toolLists.map(t => t.hash), ['aaaa000000000000', 'bbbb000000000000']);
+  const text = format(s);
+  assert.ok(text.includes('Security signals'));
+  assert.ok(text.includes('Tool list versions (2'));
+  assert.ok(!format(summarize([ev('search', 'ok', 5)])).includes('Security'));
+});
