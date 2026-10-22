@@ -72,6 +72,7 @@ export function summarize(rows, { top = 10 } = {}) {
     methods: [...group(calls, r => r.method || '(none)')].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
     clients: [...group(calls, r => r.client || '(unnamed)')].map(([k, rs]) => ({ ...line(k, rs), source: rs[0].clientSource || '' })).sort(byCalls).slice(0, top),
     callers: [...group(calls.filter(r => r.caller), r => r.caller)].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
+    apps: [...group(calls.filter(r => r.app), r => r.app)].map(([k, rs]) => line(k, rs)).sort(byCalls).slice(0, top),
     outcomes,
   };
 }
@@ -97,6 +98,7 @@ export function format(s) {
     `failed ${pct(s.total.failRate)} · p50 ${ms(s.total.p50)} · p95 ${ms(s.total.p95)}` + (s.inputRequired ? ` · ${num(s.inputRequired)} asked the client for more input` : ''),
     table('Tools', s.tools),
     table('Apps calling (client name)', s.clients),
+    s.apps.length ? table('Apps by verified OAuth client', s.apps) : '',
     s.callers.length ? table('Your labels (caller)', s.callers) : '',
     table('Methods', s.methods),
     s.notOffered.length ? '\nAsked for methods this server doesn\'t have (not counted as calls)' : '',

@@ -1,6 +1,6 @@
 # mcplytics
 
-**Usage and health for a remote MCP server: which tools get called, by which apps (as each app names itself), how each call ended and how long it took. One wrapper, no SDK, no backend, and it never stores what people asked.**
+**Usage and health for a remote MCP server: which tools get called, by which apps (as each app names itself, or as its verified OAuth client), how each call ended and how long it took. One wrapper, no SDK, no backend, and it never stores what people asked.**
 
 You built an MCP server and put it online. AI apps now call it: Claude, Cursor, ChatGPT, scripts. mcplytics answers the plain questions about that traffic:
 
@@ -96,8 +96,9 @@ One event per call, with these fields and no others:
 | `outcome`, `code` | `protocol_error`, `-32602` | the answer |
 | `status`, `ms`, `stream` | `200`, `41`, `false` | the answer |
 | `caller` | `free` | your own label, if you set `options.caller` |
+| `app` | `app.example.com` | the OAuth client your server verified, if you set `options.oauth` ([below](#oauth-clients)) |
 
-**Never recorded:** tool arguments, tool results, resource URIs, `Mcp-Param-*` headers, `Authorization`, cookies, IP addresses. Names that come from callers are cut to a fixed length and stripped to printable ASCII.
+**Never recorded:** tool arguments, tool results, resource URIs, error messages and `error.data`, the text of a failed tool's result, `Mcp-Param-*` headers, `Authorization`, raw OAuth client IDs, cookies, IP addresses. A failed call keeps only its outcome and numeric code, because error text can quote an argument or part of a document. Names that come from callers are cut to a fixed length and stripped to printable ASCII.
 
 **Your tools are never changed.** mcplytics adds no fields to tool schemas and no text to results. It reads copies of the request and the answer and hands your server's own answer back.
 
@@ -128,6 +129,39 @@ mcplytics(handler, {
 
 Keep `caller` coarse, such as a plan tier. It's yours to decide, and whatever it returns is stored.
 
+### OAuth clients
+
+Any app can call itself anything in `clientInfo`. If your server uses OAuth, the client ID on the token it accepted is a better tell. Hand mcplytics that ID, and it records which app is behind it:
+
+```js
+const verified = new WeakMap();   // request → the client_id your auth step accepted
+
+async function handler(request, env) {
+  const token = await checkToken(request);   // your own auth
+  if (!token) return new Response('Sign in', { status: 401 });
+  verified.set(request, token.client_id);
+  // ... answer the MCP request
+}
+
+mcplytics(handler, {
+  sink,
+  oauth: {
+    clientId: request => verified.get(request),   // asked after your handler runs
+    registered: { 'k3x9-prod': 'acme-desktop' },  // IDs you issued yourself, and their names
+  },
+});
+```
+
+The spec gives a client three ways to get an ID, and they tell you different amounts:
+
+| The client ID is | `app` records | Why |
+|---|---|---|
+| an HTTPS URL (Client ID Metadata Document) | its host, e.g. `app.example.com` | the authorization server fetched that document and checked the app's redirect addresses against it, so the host is the app's own domain |
+| an ID you issued, listed in `registered` | your name for it | you know who you gave it to |
+| anything else, usually from dynamic registration | `(unlisted)` | the client registered itself and chose its own name, so the ID names one installation, not an app |
+
+The ID itself is never stored. Only what it is checked against is.
+
 ## How it works
 
 - Only `POST` requests carry MCP messages. `GET`, `OPTIONS` and `DELETE` pass straight through.
@@ -142,7 +176,7 @@ Keep `caller` coarse, such as a plan tier. It's yours to decide, and whatever it
 
 - **Remote servers only.** A local server talks to its app over stdio, with no HTTP request to wrap.
 - **No intent.** It doesn't ask the model why it called a tool. Doing that means adding a field to every tool, and that's the line this tool doesn't cross.
-- **Client names are what clients send.** `clientInfo` is a SHOULD in the spec, not a MUST, and any name can be claimed. The User-Agent fallback names the HTTP library more often than the app.
+- **Client names are what clients send.** `clientInfo` is a SHOULD in the spec, not a MUST, and any name can be claimed. The User-Agent fallback names the HTTP library more often than the app. With OAuth, [`options.oauth`](#oauth-clients) gives a name the authorization server has checked.
 - **Cloudflare's clock.** In Workers, `Date.now()` moves only when your code waits on I/O, so `ms` counts time spent waiting (storage, fetches, the stream) and not pure computation.
 - **Sampling.** At high volume Analytics Engine keeps a sample. The report weights each row by `_sample_interval`. The Cloudflare reader reads the latest 10,000 rows for the period.
 

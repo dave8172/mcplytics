@@ -9,13 +9,15 @@
 // left.
 import {
   MAX_BODY, clean, userAgentClient, readCapped, messages, describeRequest,
-  responsesById, anonymousError, key, outcome, readStream,
+  responsesById, anonymousError, key, outcome, readStream, oauthApp,
 } from './parse.js';
+
+export { oauthApp };
 
 /** Every field an event has. Nothing else is ever kept. */
 export const FIELDS = [
   'time', 'method', 'name', 'client', 'clientVersion', 'clientSource',
-  'protocol', 'outcome', 'code', 'status', 'ms', 'stream', 'caller',
+  'protocol', 'outcome', 'code', 'status', 'ms', 'stream', 'caller', 'app',
 ];
 
 const isRequest = r => !!r && typeof r.url === 'string' && typeof r.method === 'string' && !!r.headers && typeof r.headers.get === 'function';
@@ -37,6 +39,8 @@ function rememberSession(id, client) {
  *       or (context) => Response                    Cloudflare Pages Functions
  * options.sink:   { write(events, env) } or (env) => that
  * options.caller: (request, env) => string          your own label, e.g. a plan tier
+ * options.oauth:  { clientId(request, env, ctx), registered }
+ *                                                   the OAuth client your auth step verified
  * options.onError: (error) => void                  mcplytics' own failures; default silent
  */
 export function mcplytics(handler, options = {}) {
@@ -61,13 +65,22 @@ export function mcplytics(handler, options = {}) {
     const copy = guard(() => request.clone());
     const caller = guard(() => clean(options.caller ? options.caller(request, env) : '')) || '';
 
+    // Asked after the handler, which is where the server's own auth step
+    // has checked the token and knows its client ID.
+    const app = () => guard(() => {
+      const o = options.oauth;
+      return o && typeof o.clientId === 'function' ? oauthApp(o.clientId(request, env, ctx), o.registered) : '';
+    }) || '';
+
     let response;
     try {
       response = await handler(...args);
     } catch (error) {
-      guard(() => waitUntil(record(copy, request, null, start, caller, env).catch(onError)));
+      const label = { caller, app: app() };
+      guard(() => waitUntil(record(copy, request, null, start, label, env).catch(onError)));
       throw error;
     }
+    const label = { caller, app: app() };
 
     let passed = response;
     let stream = null;
@@ -81,11 +94,11 @@ export function mcplytics(handler, options = {}) {
       }
     });
     const answer = stream ? null : guard(() => response.clone());
-    guard(() => waitUntil(record(copy, request, { response, answer, stream }, start, caller, env).catch(onError)));
+    guard(() => waitUntil(record(copy, request, { response, answer, stream }, start, label, env).catch(onError)));
     return passed;
   };
 
-  async function record(copy, request, reply, start, caller, env) {
+  async function record(copy, request, reply, start, { caller, app }, env) {
     const length = Number(request.headers.get('content-length') || 0);
     const readable = copy && length <= MAX_BODY;
     // An unread copy holds the whole body in memory; let it go.
@@ -136,6 +149,7 @@ export function mcplytics(handler, options = {}) {
         ms: Math.max(0, doneAt - start),
         stream: !!(reply && reply.stream),
         caller,
+        app,
       });
     }
     if (!events.length) return;
@@ -151,7 +165,7 @@ export function mcplytics(handler, options = {}) {
  *
  * Layout, which `mcplytics report --cloudflare` reads back:
  *   index1  tool name, or the method when there is none
- *   blob1-9 method, name, client, clientVersion, clientSource, protocol, outcome, caller, stream ("sse"|"json")
+ *   blob1-10 method, name, client, clientVersion, clientSource, protocol, outcome, caller, stream ("sse"|"json"), app
  *   double1-3 ms, status, code
  */
 export function analyticsEngine(binding = 'MCPLYTICS') {
@@ -162,7 +176,7 @@ export function analyticsEngine(binding = 'MCPLYTICS') {
       for (const e of events) {
         dataset.writeDataPoint({
           indexes: [(e.name || e.method).slice(0, 96)],
-          blobs: [e.method, e.name, e.client, e.clientVersion, e.clientSource, e.protocol, e.outcome, e.caller, e.stream ? 'sse' : 'json'],
+          blobs: [e.method, e.name, e.client, e.clientVersion, e.clientSource, e.protocol, e.outcome, e.caller, e.stream ? 'sse' : 'json', e.app || ''],
           doubles: [e.ms, e.status, e.code],
         });
       }

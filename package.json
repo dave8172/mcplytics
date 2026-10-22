@@ -1,6 +1,6 @@
 {
   "name": "mcplytics",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Usage and health for a remote MCP server: which tools, which apps (as they name themselves), how calls ended, how long they took. One wrapper, no SDK, no backend, never stores arguments.",
   "type": "module",
   "exports": {

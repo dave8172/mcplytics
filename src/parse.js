@@ -33,6 +33,22 @@ export function headerName(raw) {
   }
 }
 
+/**
+ * The app behind an OAuth client ID your server has verified. A Client ID
+ * Metadata Document ID is an HTTPS URL that the authorization server fetched
+ * and checked, so its host names the app. An ID you issued yourself is named
+ * by `registered`. Any other ID, usually one a client registered for itself,
+ * names one installation rather than an app, so it is not kept.
+ */
+export function oauthApp(clientId, registered = {}) {
+  if (typeof clientId !== 'string' || !clientId) return '';
+  if (clientId.startsWith('https://')) {
+    try { return clean(new URL(clientId).hostname, 128); } catch { return ''; }
+  }
+  if (registered && Object.hasOwn(registered, clientId)) return clean(registered[clientId]);
+  return '(unlisted)';
+}
+
 /** First product token of a User-Agent: `claude-code/2.1.3 (cli)` → name and version. */
 export function userAgentClient(ua) {
   const m = /^([A-Za-z0-9._@+-]+)(?:\/([A-Za-z0-9._+-]+))?/.exec((ua || '').trim());

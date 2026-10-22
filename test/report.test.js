@@ -87,3 +87,11 @@ test('jsonl sink writes lines a report can read', async () => {
 test('empty report says so', () => {
   assert.equal(format(summarize([])), 'No MCP calls recorded yet.');
 });
+
+test('apps by verified OAuth client: shown only when some call has one', () => {
+  const plain = format(summarize([ev('search', 'ok', 5)]));
+  assert.ok(!plain.includes('OAuth'));
+  const s = summarize([ev('search', 'ok', 5, { app: 'app.example.com' }), ev('search', 'ok', 7, { app: 'app.example.com' }), ev('get', 'ok', 3)]);
+  assert.deepEqual(s.apps.map(a => [a.label, a.calls]), [['app.example.com', 2]]);
+  assert.ok(format(s).includes('Apps by verified OAuth client'));
+});

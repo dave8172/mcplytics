@@ -24,6 +24,12 @@ export interface McpEvent {
   stream: boolean;
   /** Your own label from options.caller, e.g. a plan tier; "" if none. */
   caller: string;
+  /**
+   * The app behind the verified OAuth client (options.oauth): the host of a
+   * Client ID Metadata Document URL, your name for an ID you issued,
+   * "(unlisted)" for any other ID, "" with no OAuth client.
+   */
+  app: string;
 }
 
 export interface Sink {
@@ -35,6 +41,13 @@ export interface Options<Env = any> {
   sink?: Sink | ((env: Env) => Sink | undefined);
   /** A label of your own for the caller. Read headers only; keep it coarse. */
   caller?: (request: Request, env: Env) => string;
+  /** The OAuth client your auth step verified. Asked after your handler runs. */
+  oauth?: {
+    /** The client_id of the token your server accepted for this request; undefined if none. */
+    clientId: (request: Request, env: Env, ctx?: any) => string | undefined | null;
+    /** IDs you issued yourself, mapped to the name to record. */
+    registered?: Record<string, string>;
+  };
   /** mcplytics' own failures. The server's answer is never affected. Default: ignored. */
   onError?: (error: unknown) => void;
 }
@@ -45,6 +58,9 @@ export interface Options<Env = any> {
  * and `(context) => Response` (Cloudflare Pages Functions).
  */
 export function mcplytics<H extends (...args: any[]) => Response | Promise<Response>>(handler: H, options?: Options): H;
+
+/** The name mcplytics records for a verified OAuth client ID (see McpEvent.app). */
+export function oauthApp(clientId: string | undefined | null, registered?: Record<string, string>): string;
 
 /** Workers Analytics Engine, through a dataset binding (default name MCPLYTICS). */
 export function analyticsEngine(binding?: string): Sink;

@@ -1,7 +1,7 @@
 // node --test: the wrapper against small fake servers, one per way a call can end.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mcplytics, memory, analyticsEngine } from '../src/index.js';
+import { mcplytics, memory, analyticsEngine, oauthApp } from '../src/index.js';
 
 const URL_ = 'https://example.test/mcp';
 const NEW = '2026-07-28';
@@ -191,6 +191,57 @@ test('never keeps arguments, results, or Mcp-Param headers', async () => {
   assert.ok(!JSON.stringify(events).includes('echo'));
 });
 
+test('never keeps error text: a protocol error message, error.data, or a failed tool\'s result', async () => {
+  const secret = 'patient-7731-record';
+  const asProtocol = async req => { const m = await req.json(); return json({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: `bad q: ${secret}`, data: { excerpt: secret } } }); };
+  const asTool = async req => { const m = await req.json(); return json({ jsonrpc: '2.0', id: m.id, result: { isError: true, content: [{ type: 'text', text: `no match in "${secret}"` }] } }); };
+  const asStream = async req => {
+    const m = await req.json();
+    return new Response(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { isError: true, content: [{ type: 'text', text: secret }] } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const asAnonymous = async () => json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: `cannot parse ${secret}` } }, 400);
+  for (const [handler, outcome] of [[asProtocol, 'protocol_error'], [asTool, 'tool_error'], [asStream, 'tool_error'], [asAnonymous, 'protocol_error']]) {
+    const { events } = await run(handler, call(toolCall(30, 'search', { q: 'x' })));
+    assert.equal(events[0].outcome, outcome);
+    assert.ok(!JSON.stringify(events).includes(secret));
+  }
+});
+
+test('oauthApp: a metadata-document URL gives its host; an ID you issued, your name; any other, (unlisted)', () => {
+  assert.equal(oauthApp('https://app.example.com/oauth/client.json'), 'app.example.com');
+  assert.equal(oauthApp('k3x9-prod', { 'k3x9-prod': 'acme-desktop' }), 'acme-desktop');
+  assert.equal(oauthApp('9f2c41d0-6b1e-4a51-8f3e-2d7a0c5e1b77'), '(unlisted)');
+  assert.equal(oauthApp('http://app.example.com/client.json'), '(unlisted)');
+  assert.equal(oauthApp('toString'), '(unlisted)');
+  assert.equal(oauthApp(undefined), '');
+  assert.equal(oauthApp(''), '');
+});
+
+test('oauth: the client ID the handler verified is read after it runs, and never kept raw', async () => {
+  const verified = new WeakMap();
+  const handler = async req => { verified.set(req, req.headers.get('x-test-client')); return echoResult(req); };
+  const oauth = { clientId: req => verified.get(req), registered: { 'k3x9-prod': 'acme-desktop' } };
+  const cases = [
+    ['https://app.example.com/oauth/client.json', 'app.example.com'],
+    ['k3x9-prod', 'acme-desktop'],
+    ['dcr-5d1f9a7e', '(unlisted)'],
+  ];
+  for (const [id, app] of cases) {
+    const { events } = await run(handler, call(toolCall(31, 'search'), { 'x-test-client': id }), { oauth });
+    assert.equal(events[0].app, app);
+    if (app === '(unlisted)') assert.ok(!JSON.stringify(events).includes(id));
+  }
+  const { events } = await run(echoResult, call(toolCall(32, 'search')));
+  assert.equal(events[0].app, '');
+});
+
+test('oauth: a throwing clientId hook leaves the answer and the event alone', async () => {
+  const { events, text } = await run(echoResult, call(toolCall(33, 'search')), { oauth: { clientId: () => { throw new Error('no'); } } });
+  assert.equal(JSON.parse(text).result.content[0].text, 'five results');
+  assert.equal(events[0].app, '');
+  assert.equal(events[0].outcome, 'ok');
+});
+
 test('resources/read keeps no URI', async () => {
   const { events } = await run(echoResult, call({ jsonrpc: '2.0', id: 12, method: 'resources/read', params: { uri: 'file:///home/me/notes.txt' } }, { 'mcp-name': 'file:///home/me/notes.txt' }));
   assert.equal(events[0].name, '');
@@ -271,6 +322,7 @@ test('Cloudflare Pages Functions: context in, waitUntil used, caller label kept'
   assert.deepEqual(points[0].blobs.slice(0, 3), ['tools/call', 'search_docs', 'claude-code']);
   assert.equal(points[0].blobs[6], 'ok');
   assert.equal(points[0].blobs[7], 'free');
+  assert.equal(points[0].blobs[9], '');
   assert.equal(points[0].doubles[1], 200);
 });
 
